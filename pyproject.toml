@@ -1,0 +1,23 @@
+[project]
+name = "audiosync"
+version = "0.1.0"
+description = "Fixed-offset dubbed audio synchronizer"
+requires-python = ">=3.10"
+dependencies = ["numpy>=1.24"]
+
+[project.scripts]
+audiosync = "audiosync.cli:main"
+audiosync-web = "audiosync.web:main"
+
+[build-system]
+requires = ["setuptools>=61"]
+build-backend = "setuptools.build_meta"
+
+[tool.setuptools.package-data]
+audiosync = ["web/index.html"]
+
+[tool.setuptools.packages.find]
+include = ["audiosync*"]
+
+[tool.setuptools]
+include-package-data = true

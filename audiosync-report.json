@@ -1,0 +1,20 @@
+{
+  "offset": 0.0,
+  "tempo_ratio": 1.0,
+  "confidence": 0.9917971742509089,
+  "matches": [
+    {
+      "target_time": 0.0,
+      "source_time": 0.0,
+      "confidence": 0.9917971742509089
+    }
+  ],
+  "segments": [
+    {
+      "target_start": 0.0,
+      "target_end": 12.032,
+      "source_start": 0.0,
+      "tempo": 1.0
+    }
+  ]
+}
