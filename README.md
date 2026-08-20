@@ -1,120 +1,120 @@
 # adcrs
 
-Sincronizador local de áudio dublado com vídeo de melhor qualidade.
+Local audio synchronization tool.
 
-O MVP encontra um offset fixo usando características espectrais e energia do áudio. Depois gera um novo arquivo preservando o vídeo sem recodificação sempre que possível.
+The MVP finds a fixed audio offset using spectral features and energy patterns, then muxes the synchronized audio into a target video while preserving the video stream whenever possible.
 
-## Requisitos
+## Requirements
 
 - Python 3.10+
 - FFmpeg
 - ffprobe
 - NumPy
 
-No Fedora/Nobara:
+On Fedora/Nobara:
 
 ```bash
 sudo dnf install ffmpeg
 ```
 
-## Instalação
+## Installation
 
-No diretório do projeto:
+From the project directory:
 
 ```bash
 python3 -m pip install -e .
 ```
 
-Isso instala os comandos `audiosync` e `audiosync-web`.
+This installs the `audiosync` and `audiosync-web` commands.
 
 ## CLI
 
-Analisar e gerar o arquivo final:
+Analyze and create the output file:
 
 ```bash
-audiosync video_hq.mkv video_dublado_sd.mkv
+audiosync target.mkv source.mkv
 ```
 
-Saída padrão:
+Default output:
 
 ```text
-video_hq.dubbed.mkv
+target.dubbed.mkv
 ```
 
-Fazer apenas a análise:
+Analyze without creating an output file:
 
 ```bash
-audiosync video_hq.mkv video_dublado_sd.mkv --dry-run
+audiosync target.mkv source.mkv --dry-run
 ```
 
-Escolher saída e exportar relatórios:
+Choose an output path and export reports:
 
 ```bash
-audiosync video_hq.mkv video_dublado_sd.mkv \
-  --output video_hq.dubbed.mkv \
+audiosync target.mkv source.mkv \
+  --output synchronized.mkv \
   --report sync.json \
   --csv sync.csv
 ```
 
-Se a confiança ficar abaixo do limite, o programa retorna `MANUAL REVIEW` e não cria o arquivo final.
+If confidence is below the configured threshold, the command returns `MANUAL REVIEW` and does not create the output file.
 
 ## Web UI
 
-Inicie o servidor local:
+Start the local server:
 
 ```bash
 audiosync-web
 ```
 
-Abra `http://127.0.0.1:8765` no navegador. Também funciona sem instalação do pacote:
+Open `http://127.0.0.1:8765` in a browser. Without installing the package:
 
 ```bash
 python3 -m audiosync.web
 ```
 
-A interface permite:
+The UI lets you:
 
-- selecionar o vídeo target e o arquivo dublado;
-- analisar o alinhamento;
-- visualizar offset, correção temporal, confiança, matches e segmentos;
-- criar o MKV final e baixar o resultado.
+- select the target video and source audio/video;
+- analyze the alignment;
+- inspect offset, tempo correction, confidence, matches, and segments;
+- create and download the final MKV.
 
-Os arquivos enviados são processados localmente pelo servidor. Não existe upload para serviço externo.
+Files are processed locally by the server. Nothing is uploaded to an external service.
 
-## Testes
+## Tests
 
 ```bash
 python3 -m unittest discover -s tests -v
 python3 -m compileall -q audiosync
 ```
 
-## Como funciona
+## How it works
 
-1. `ffprobe` valida os arquivos e encontra as trilhas de áudio.
-2. `ffmpeg` extrai uma cópia mono PCM em 8 kHz para análise.
-3. O áudio vira uma sequência de características espectrais e fluxo de energia.
-4. Janelas distribuídas do target são procuradas no áudio source por correlação normalizada.
-5. Os pontos encontrados estimam offset, relação temporal preliminar e confiança.
-6. O áudio dublado é muxado no vídeo target com `-c:v copy`.
+1. `ffprobe` validates both files and locates their audio streams.
+2. `ffmpeg` extracts mono 8 kHz PCM audio for analysis.
+3. The audio is converted into spectral features and energy flux.
+4. Distributed target windows are searched in the source audio using normalized correlation.
+5. Matches are used to estimate the offset, a preliminary time ratio, and confidence.
+6. The source audio is muxed into the target video with `-c:v copy`.
 
-## Limitações atuais
+## Current limitations
 
-- O MVP estima principalmente offset fixo.
-- Drift progressivo ainda não é corrigido de forma confiável.
-- Cortes, logos ausentes, recaps e múltiplas mudanças de offset ainda não são segmentados.
-- Batch de episódios ainda não está implementado.
-- A análise não usa L-R nem tratamento específico para canal central.
-- O áudio final é recodificado para AAC quando o mux é necessário.
-- A Web UI é deliberadamente local e simples, sem autenticação. Não exponha a porta publicamente.
+- The MVP primarily estimates a fixed offset.
+- Progressive drift is not corrected reliably yet.
+- Cuts, missing intros, recaps, logos, and multiple offset changes are not segmented yet.
+- Batch episode processing is not implemented.
+- The analysis does not yet use L-R separation or special center-channel handling.
+- The output audio is re-encoded to AAC when muxing is required.
+- The Web UI is intentionally local and simple, without authentication. Do not expose it publicly.
 
-## Estrutura
+## Structure
 
 ```text
 audiosync/
-  cli.py       # CLI e mux
-  ffmpeg.py    # ffprobe, validação e extração
-  sync.py      # análise e relatório
-  web.py       # servidor local da Web UI
+  cli.py       # CLI and muxing
+  ffmpeg.py    # ffprobe, validation, and extraction
+  sync.py      # analysis and reports
+  web.py       # local Web UI server
   web/
     index.html
 
@@ -122,4 +122,4 @@ tests/
   test_sync.py
 ```
 
-Projeto em fases. O próximo passo natural é melhorar a estimativa de drift antes de tentar automatizar cortes e timelines segmentadas.
+The project is being developed in phases. The next natural step is improving drift estimation before automating cuts and segmented timelines.
