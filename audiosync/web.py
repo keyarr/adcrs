@@ -8,6 +8,7 @@ import urllib.parse
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 
+from .cli import mux
 from .ffmpeg import require_tools
 from .sync import analyze_files
 
@@ -199,7 +200,7 @@ class Handler(BaseHTTPRequestHandler):
                 return
             if path == "/api/mux":
                 output = _tmp(".mkv")
-                subprocess.run(["ffmpeg", "-y", "-v", "error", "-i", str(target), "-itsoffset", str(-report["offset"]), "-i", str(source), "-map", "0:v?", "-map", "0:s?", "-map", "0:d?", "-map", "1:a:0", "-map_metadata", "0", "-c:v", "copy", "-c:s", "copy", "-c:d", "copy", "-c:a", "aac", "-shortest", str(output)], check=True)
+                mux(target, source, output, report["offset"])
                 OUTPUTS[output.name] = output
                 self._send(200, json.dumps({"report": report, "download": f"/api/download/{output.name}"}))
                 return

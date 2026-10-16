@@ -13,8 +13,8 @@ def output_path(target: Path, requested: str | None) -> Path:
 def mux(target: Path, source: Path, output: Path, offset: float) -> None:
     subprocess.run([
         "ffmpeg", "-y", "-v", "error", "-i", str(target), "-itsoffset", str(-offset), "-i", str(source),
-        "-map", "0:v?", "-map", "0:s?", "-map", "0:d?", "-map", "1:a:0", "-map_metadata", "0",
-        "-c:v", "copy", "-c:s", "copy", "-c:d", "copy", "-c:a", "aac", "-shortest", str(output),
+        "-map", "0:v?", "-map", "0:a?", "-map", "1:a:0", "-map", "0:s?", "-map", "0:d?", "-map_metadata", "0",
+        "-c", "copy", str(output),
     ], check=True)
 
 

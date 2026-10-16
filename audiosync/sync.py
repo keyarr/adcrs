@@ -70,8 +70,16 @@ def analyze(target: np.ndarray, source: np.ndarray, sample_rate: int, window_sec
         raise SyncError("No reliable audio correspondence found")
     target_times = np.array([m["target_time"] for m in valid])
     source_times = np.array([m["source_time"] for m in valid])
-    coefficients = np.polyfit(target_times, source_times, 1) if len(valid) >= 2 else (1.0, source_times[0])
-    ratio, offset = float(coefficients[0]), float(coefficients[1])
+    deltas = source_times - target_times
+    med_offset = float(np.median(deltas))
+    inliers = np.abs(deltas - med_offset) <= max(0.5, float(np.median(np.abs(deltas - med_offset)) * 3 + 0.1))
+    if np.count_nonzero(inliers) >= 2:
+        coefficients = np.polyfit(target_times[inliers], source_times[inliers], 1)
+        ratio, offset = float(coefficients[0]), float(coefficients[1])
+        if abs(ratio - 1.0) > 0.1:
+            ratio, offset = 1.0, med_offset
+    else:
+        ratio, offset = 1.0, med_offset
     residuals = source_times - (offset + ratio * target_times)
     robust = np.abs(residuals) <= max(0.35, float(np.median(np.abs(residuals)) * 3 + 0.05))
     confidence = float(np.clip(np.mean([m["confidence"] for m in valid]) * np.mean(robust), 0, 1))

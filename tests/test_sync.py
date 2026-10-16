@@ -47,6 +47,26 @@ class SyncTests(unittest.TestCase):
         with self.assertRaises(SyncError):
             analyze(audio, signal(), 800)
 
+    def test_offset_with_lead_silence(self):
+        sig = signal(length=16000)
+        target = np.concatenate((np.zeros(4000, dtype=np.float32), sig))
+        source = np.concatenate((np.zeros(7904, dtype=np.float32), sig))
+        report = analyze(target, source, 800, window_seconds=6, step_seconds=6)
+        self.assertAlmostEqual(report["offset"], 4.88, delta=0.25)
+
+    def test_mux_preserves_audio_streams(self):
+        from unittest.mock import patch
+        from pathlib import Path
+        from audiosync.cli import mux
+
+        with patch("subprocess.run") as mock_run:
+            mux(Path("target.mkv"), Path("source.mkv"), Path("out.mkv"), 6.1)
+            args = mock_run.call_args[0][0]
+            self.assertIn("0:a?", args)
+            self.assertIn("1:a:0", args)
+            self.assertNotIn("-shortest", args)
+            self.assertEqual(args[args.index("-c") + 1], "copy")
+
 
 if __name__ == "__main__":
     unittest.main()
