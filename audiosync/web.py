@@ -1,9 +1,10 @@
 import json
+import os
+import re
+import shutil
 import subprocess
 import tempfile
 import urllib.parse
-from email.parser import BytesParser
-from email.policy import default
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 
@@ -12,23 +13,146 @@ from .sync import analyze_files
 
 ROOT = Path(__file__).parent / "web"
 OUTPUTS = {}
+# /tmp is often tmpfs, so multi-GB uploads would eat RAM and swap.
+TMP_DIR = os.environ.get("AUDIOSYNC_TMP", "/var/tmp")
+
+
+def _tmp(suffix: str) -> Path:
+    fd, name = tempfile.mkstemp(suffix=suffix, dir=TMP_DIR)
+    os.close(fd)
+    return Path(name)
+
+
+def _safe_suffix(filename: str) -> str:
+    suffix = Path(filename).suffix
+    suffix = "".join(c for c in suffix if c.isalnum() or c in (".", "-", "_"))[:16]
+    if not suffix.startswith(".") or len(suffix) < 2:
+        return ".bin"
+    return suffix
+
+
+def _field_name(disposition: str) -> tuple[str | None, str | None]:
+    name = re.search(r'name="([^"]*)"', disposition)
+    filename = re.search(r'filename="([^"]*)"', disposition)
+    star = re.search(r"filename\*\s*=\s*([^;\s]+)", disposition)
+    result = filename.group(1) if filename else None
+    if result is None and star:
+        value = star.group(1).strip("'\"")
+        if "''" in value:
+            _, _, value = value.partition("''")
+        result = urllib.parse.unquote(value)
+    return (name.group(1) if name else None), (result or None)
 
 
 def parse_upload(request):
+    # Streams file parts straight to disk in chunks so GB uploads never sit in RAM.
     content_type = request.headers.get("Content-Type", "")
     if not content_type.startswith("multipart/form-data;") or "boundary=" not in content_type:
         raise ValueError("Expected multipart/form-data upload")
-    body = request.rfile.read(int(request.headers.get("Content-Length", 0)))
-    message = BytesParser(policy=default).parsebytes(
-        b"Content-Type: " + content_type.encode() + b"\r\n\r\n" + body
-    )
-    files = {}
-    for part in message.iter_attachments():
-        name = part.get_param("name", header="content-disposition")
-        filename = part.get_filename()
-        if name and filename:
-            files[name] = (filename, part.get_payload(decode=True))
-    return files
+    boundary = content_type.split("boundary=", 1)[1].strip().strip('"')
+    if not boundary:
+        raise ValueError("Missing multipart boundary")
+    delimiter = b"--" + boundary.encode()
+    try:
+        length = int(request.headers.get("Content-Length", 0))
+    except ValueError:
+        raise ValueError("Invalid Content-Length")
+    if length <= 0:
+        raise ValueError("Empty upload")
+
+    remaining = length
+    buf = bytearray()
+    created: list[Path] = []
+
+    def fill(min_bytes: int = 1) -> None:
+        nonlocal remaining
+        while len(buf) < min_bytes and remaining > 0:
+            chunk = request.rfile.read(min(65536, remaining))
+            if not chunk:
+                break
+            buf.extend(chunk)
+            remaining -= len(chunk)
+
+    def readline() -> bytes:
+        while True:
+            index = buf.find(b"\r\n")
+            if index >= 0:
+                line = bytes(buf[:index + 2])
+                del buf[:index + 2]
+                return line
+            if remaining <= 0:
+                if buf:
+                    line = bytes(buf)
+                    buf.clear()
+                    return line
+                raise ValueError("Truncated upload")
+            fill(len(buf) + 65536)
+
+    try:
+        fill(2)
+        first = readline()
+        if not first.startswith(delimiter):
+            raise ValueError("Malformed multipart body")
+
+        files: dict[str, tuple[str, Path]] = {}
+        tail = len(delimiter) + 8
+        while True:
+            headers: list[str] = []
+            while True:
+                line = readline().decode("latin-1")
+                if line in ("", "\r\n"):
+                    break
+                headers.append(line)
+            disposition = next((h for h in headers if h.lower().startswith("content-disposition:")), "")
+            name, filename = _field_name(disposition)
+            if name and filename:
+                path = _tmp(_safe_suffix(filename))
+                created.append(path)
+                with path.open("wb") as handle:
+                    while True:
+                        fill(tail + 1)
+                        index = buf.find(b"\r\n" + delimiter)
+                        if index >= 0:
+                            handle.write(buf[:index])
+                            del buf[:index + 2]
+                            break
+                        if len(buf) > tail:
+                            handle.write(buf[:-tail])
+                            del buf[:-tail]
+                        if remaining <= 0 and not buf:
+                            raise ValueError("Truncated upload")
+                        if remaining <= 0:
+                            # No boundary found before EOF.
+                            raise ValueError("Truncated upload")
+                files[name] = (filename, path)
+            else:
+                # Skip non-file fields without buffering them fully.
+                while True:
+                    fill(tail + 1)
+                    index = buf.find(b"\r\n" + delimiter)
+                    if index >= 0:
+                        del buf[:index + 2]
+                        break
+                    if len(buf) > tail:
+                        del buf[:-tail]
+                    if remaining <= 0:
+                        raise ValueError("Truncated upload")
+            line = readline()
+            if line.startswith(delimiter + b"--"):
+                break
+            if not line.startswith(delimiter):
+                raise ValueError("Malformed multipart body")
+        return files
+    except BaseException:
+        for path in created:
+            path.unlink(missing_ok=True)
+        # Closing with unread body makes browser report a network error instead of our JSON.
+        while remaining > 0:
+            chunk = request.rfile.read(min(1024 * 1024, remaining))
+            if not chunk:
+                break
+            remaining -= len(chunk)
+        raise
 
 
 class Handler(BaseHTTPRequestHandler):
@@ -49,29 +173,32 @@ class Handler(BaseHTTPRequestHandler):
             name = path.removeprefix("/api/download/")
             output = OUTPUTS.pop(name, None)
             if output and output.exists():
-                self._send(200, output.read_bytes(), "video/x-matroska")
+                size = output.stat().st_size
+                self.send_response(200)
+                self.send_header("Content-Type", "video/x-matroska")
+                self.send_header("Content-Length", str(size))
+                self.end_headers()
+                with output.open("rb") as handle:
+                    shutil.copyfileobj(handle, self.wfile, length=1024 * 1024)
                 output.unlink(missing_ok=True)
                 return
         self._send(404, json.dumps({"error": "Not found"}))
 
     def do_POST(self):
         target = source = None
+        files: dict = {}
         try:
             require_tools()
             path = urllib.parse.urlparse(self.path).path
             files = parse_upload(self)
-            target_name, target_data = files["target"]
-            source_name, source_data = files["source"]
-            target = Path(tempfile.mkstemp(suffix=Path(target_name).suffix)[1])
-            source = Path(tempfile.mkstemp(suffix=Path(source_name).suffix)[1])
-            target.write_bytes(target_data)
-            source.write_bytes(source_data)
+            _, target = files["target"]
+            _, source = files["source"]
             report = analyze_files(target, source)
             if path == "/api/analyze":
                 self._send(200, json.dumps(report))
                 return
             if path == "/api/mux":
-                output = Path(tempfile.mkstemp(suffix=".mkv")[1])
+                output = _tmp(".mkv")
                 subprocess.run(["ffmpeg", "-y", "-v", "error", "-i", str(target), "-itsoffset", str(-report["offset"]), "-i", str(source), "-map", "0:v?", "-map", "0:s?", "-map", "0:d?", "-map", "1:a:0", "-map_metadata", "0", "-c:v", "copy", "-c:s", "copy", "-c:d", "copy", "-c:a", "aac", "-shortest", str(output)], check=True)
                 OUTPUTS[output.name] = output
                 self._send(200, json.dumps({"report": report, "download": f"/api/download/{output.name}"}))
@@ -82,9 +209,12 @@ class Handler(BaseHTTPRequestHandler):
         except Exception as error:
             self._send(500, json.dumps({"error": "Request failed: " + str(error)}))
         finally:
-            for path in (target, source):
-                if path:
-                    path.unlink(missing_ok=True)
+            seen = set()
+            for value in list(files.values()) + [target, source]:
+                path = value[1] if isinstance(value, tuple) else value
+                if path and path not in seen:
+                    seen.add(path)
+                    Path(path).unlink(missing_ok=True)
 
     def log_message(self, *_):
         return
