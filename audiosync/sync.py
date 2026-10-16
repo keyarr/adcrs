@@ -103,14 +103,20 @@ def analyze(target: np.ndarray, source: np.ndarray, sample_rate: int, window_sec
                 groups[-1].append(idx)
                 continue
         groups.append([idx])
-    stables = [g for g in groups if len(g) >= 2]
-    if not stables:
+    edges = {matches[0]["target_time"], matches[-1]["target_time"]}
+    stables = [
+        g for g in groups
+        if len(g) >= 2 or (reliable[g[0]]["target_time"] in edges and reliable[g[0]]["margin"] >= 0.1)
+    ]
+    if not any(len(g) >= 2 for g in stables):
         raise SyncError("No reliable audio correspondence found")
     main = max(stables, key=lambda g: (len(g), -min(reliable[i]["target_time"] for i in g)))
     main_points = [(reliable[i]["target_time"], reliable[i]["source_time"]) for i in main]
     ratio, offset = _fit_level(main_points)
     mean_conf = float(np.mean([reliable[i]["confidence"] for i in main]))
-    confidence = float(np.clip(mean_conf * len(main) / len(reliable), 0, 1))
+    step_sec = step * frame_step
+    span = (max(t for t, _ in main_points) - min(t for t, _ in main_points) + step_sec) / (len(matches) * step_sec)
+    confidence = float(np.clip(mean_conf * (len(main) / len(reliable)) * span, 0, 1))
     cuts = len(stables) - 1
     if cuts > 0:
         confidence = min(confidence * 0.5, 0.34)

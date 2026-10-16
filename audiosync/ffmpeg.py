@@ -29,7 +29,11 @@ def first_audio_stream(info: dict) -> dict:
 
 def extract_audio(path: str | Path, sample_rate: int = 8000) -> tuple[bytes, int]:
     result = subprocess.run(
-        ["ffmpeg", "-v", "error", "-i", str(path), "-map", "0:a:0", "-ac", "1", "-ar", str(sample_rate), "-f", "f32le", "pipe:1"],
+        [
+            "ffmpeg", "-v", "error", "-i", str(path), "-map", "0:a:0",
+            "-af", f"aresample={sample_rate}:async=1:first_pts=0",
+            "-ac", "1", "-ar", str(sample_rate), "-f", "f32le", "pipe:1",
+        ],
         check=True,
         capture_output=True,
     )

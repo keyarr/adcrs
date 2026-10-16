@@ -91,10 +91,27 @@ class SyncTests(unittest.TestCase):
                     self.assertIn(f"-c:a:{dubbed}", args)
                     self.assertEqual(args[args.index(f"-c:a:{dubbed}") + 1], "aac")
                     filt = args[args.index(f"-filter:a:{dubbed}") + 1]
-                    self.assertIn("atrim=start=6.084", filt)
-                    self.assertIn("async=1", filt)
+                    self.assertTrue(filt.startswith("aresample=48000:async=1:first_pts=0,atrim=start=6.084"))
                     self.assertIn("whole_dur=", filt)
                     self.assertIn("language=por", args)
+
+    def test_edge_cut_lowers_confidence(self):
+        head = signal(length=5200, seed=11)
+        body = signal(length=19200, seed=12)
+        gap = np.zeros(1600, dtype=np.float32)
+        target = np.concatenate((head, gap, body))
+        source = np.concatenate((gap, head, gap, gap, body))
+        report = analyze(target, source, 800, window_seconds=6, step_seconds=6)
+        self.assertEqual(report["cuts"], 1)
+        self.assertLess(report["confidence"], 0.35)
+
+    def test_truncated_source_lowers_span_confidence(self):
+        full = signal(length=48000, seed=21)
+        noise = signal(length=24000, seed=22)
+        source = np.concatenate((np.zeros(800, dtype=np.float32), full[:24000], noise))
+        report = analyze(full, source, 800, window_seconds=6, step_seconds=6)
+        self.assertAlmostEqual(report["offset"], 1.0, delta=0.2)
+        self.assertLess(report["confidence"], 0.6)
 
 
 class PairTests(unittest.TestCase):

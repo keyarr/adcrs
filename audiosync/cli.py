@@ -97,23 +97,21 @@ def _target_layout(info: dict) -> tuple[int, float | None]:
 
 
 def _dub_filter(offset: float, length: float | None) -> str:
-    if offset > 0.001:
-        head = f"atrim=start={offset:.3f},asetpts=PTS-STARTPTS"
-    elif offset < -0.001:
-        delay_ms = int(round(-offset * 1000))
-        head = f"adelay=delays={delay_ms}:all=1,asetpts=PTS-STARTPTS"
-    else:
-        head = "asetpts=PTS-STARTPTS"
     # Resample so the new track matches the target base, pad short sources
     # with silence and cut long ones at the target length. whole_dur bounds
     # apad so a short source can't produce an infinite stream when length
     # is unknown; async fills edit-list gaps instead of drifting.
-    tail = ",aresample=48000:async=1"
-    if length is not None and length > 0:
-        tail += f",apad=whole_dur={length:.3f},atrim=0:{length:.3f}"
+    head = "aresample=48000:async=1:first_pts=0,"
+    if offset > 0.001:
+        head += f"atrim=start={offset:.3f},asetpts=PTS-STARTPTS"
+    elif offset < -0.001:
+        delay_ms = int(round(-offset * 1000))
+        head += f"adelay=delays={delay_ms}:all=1,asetpts=PTS-STARTPTS"
     else:
-        tail += ",apad"
-    return head + tail
+        head += "asetpts=PTS-STARTPTS"
+    if length is not None and length > 0:
+        return f"{head},apad=whole_dur={length:.3f},atrim=0:{length:.3f}"
+    return f"{head},apad"
 
 
 def _verify_dubbed(output: Path, length: float | None) -> None:
