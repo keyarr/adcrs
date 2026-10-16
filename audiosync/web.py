@@ -1,7 +1,6 @@
 import json
 import os
 import re
-import shutil
 import subprocess
 import sys
 import tempfile
@@ -9,12 +8,11 @@ import urllib.parse
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 
-from .cli import mux
+from .cli import episode_tag, mux, output_path
 from .ffmpeg import require_tools
 from .sync import analyze_files
 
 ROOT = Path(__file__).parent / "web"
-OUTPUTS = {}
 # /tmp is often tmpfs, so multi-GB uploads would eat RAM and swap.
 TMP_DIR = os.environ.get("AUDIOSYNC_TMP", "/var/tmp")
 
@@ -177,23 +175,6 @@ class Handler(BaseHTTPRequestHandler):
         if path == "/favicon.ico":
             self._send(204, b"")
             return
-        if path.startswith("/api/download/"):
-            name = path.removeprefix("/api/download/")
-            output = OUTPUTS.pop(name, None)
-            if output and output.exists():
-                try:
-                    size = output.stat().st_size
-                    self.send_response(200)
-                    self.send_header("Content-Type", "video/x-matroska")
-                    self.send_header("Content-Length", str(size))
-                    self.end_headers()
-                    with output.open("rb") as handle:
-                        shutil.copyfileobj(handle, self.wfile, length=1024 * 1024)
-                except (BrokenPipeError, ConnectionResetError):
-                    pass
-                finally:
-                    output.unlink(missing_ok=True)
-                return
         self._send(404, json.dumps({"error": "Not found"}))
 
     def do_POST(self):
@@ -203,17 +184,21 @@ class Handler(BaseHTTPRequestHandler):
             require_tools()
             path = urllib.parse.urlparse(self.path).path
             files = parse_upload(self)
-            _, target = files["target"]
-            _, source = files["source"]
+            target_name, target = files["target"]
+            source_name, source = files["source"]
+            target_tag, source_tag = episode_tag(target_name), episode_tag(source_name)
+            if target_tag is not None and source_tag is not None and target_tag != source_tag:
+                raise ValueError(f"Episode mismatch: HQ is {target_tag} but dubbed is {source_tag}")
             report = analyze_files(target, source)
             if path == "/api/analyze":
                 self._send(200, json.dumps(report))
                 return
             if path == "/api/mux":
-                output = _tmp(".mkv")
+                # Name the output after the HQ upload: S02E03 in the name
+                # becomes muxes/S02E03.mkv, otherwise muxes/<hq>.dubbed.mkv.
+                output = output_path(Path(target_name), None)
                 mux(target, source, output, report["offset"])
-                OUTPUTS[output.name] = output
-                self._send(200, json.dumps({"report": report, "download": f"/api/download/{output.name}"}))
+                self._send(200, json.dumps({"report": report, "saved": f"muxes/{output.name}"}))
                 return
             self._send(404, json.dumps({"error": "Not found"}))
         except (KeyError, OSError, ValueError, subprocess.CalledProcessError) as error:

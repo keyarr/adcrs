@@ -2,6 +2,7 @@ import unittest
 
 import numpy as np
 
+from audiosync.cli import pair_batch
 from audiosync.sync import SyncError, analyze
 
 
@@ -94,6 +95,30 @@ class SyncTests(unittest.TestCase):
                     self.assertIn("async=1", filt)
                     self.assertIn("whole_dur=", filt)
                     self.assertIn("language=por", args)
+
+
+class PairTests(unittest.TestCase):
+    def test_pairs_by_tag_regardless_of_order(self):
+        targets = ["Show S02E03 HQ.mkv", "Show S02E01 HQ.mkv"]
+        sources = ["dubbed S02E01.mkv", "dubbed S02E03.mkv"]
+        self.assertEqual(pair_batch(targets, sources), [(targets[1], sources[0]), (targets[0], sources[1])])
+
+    def test_single_without_tag_still_works(self):
+        self.assertEqual(pair_batch(["hq.mkv"], ["dub.mkv"]), [("hq.mkv", "dub.mkv")])
+
+    def test_single_mismatch_is_rejected(self):
+        with self.assertRaises(ValueError):
+            pair_batch(["A S02E01.mkv"], ["B S02E02.mkv"])
+
+    def test_batch_requires_tags_and_matching_sets(self):
+        with self.assertRaises(ValueError):
+            pair_batch(["A S02E01.mkv", "B.mkv"], ["C S02E01.mkv", "D S02E02.mkv"])
+        with self.assertRaises(ValueError):
+            pair_batch(["A S02E01.mkv", "B S02E01.mkv"], ["C S02E01.mkv", "D S02E02.mkv"])
+        with self.assertRaises(ValueError):
+            pair_batch(["A S02E01.mkv", "B S02E02.mkv"], ["C S02E01.mkv", "D S02E03.mkv"])
+        with self.assertRaises(ValueError):
+            pair_batch(["a", "b"], ["c"])
 
 
 if __name__ == "__main__":

@@ -1,13 +1,78 @@
 import argparse
+import re
 import subprocess
 from pathlib import Path
 
 from .ffmpeg import first_audio_stream, probe, require_tools
 from .sync import SyncError, analyze_files, write_report
 
+EPISODE_RE = re.compile(r"s(\d{1,3})e(\d{1,3})", re.IGNORECASE)
+
+
+def episode_tag(filename: str) -> str | None:
+    match = EPISODE_RE.search(filename)
+    if not match:
+        return None
+    return f"S{int(match.group(1)):02d}E{int(match.group(2)):02d}"
+
+
+def default_output(target: Path) -> Path:
+    root = Path(__file__).resolve().parent.parent / "muxes"
+    tag = episode_tag(target.name)
+    if tag:
+        return root / (tag + ".mkv")
+    return root / (target.stem + ".dubbed" + target.suffix)
+
 
 def output_path(target: Path, requested: str | None) -> Path:
-    return Path(requested) if requested else target.with_name(target.stem + ".dubbed" + target.suffix)
+    return Path(requested) if requested else default_output(target)
+
+
+def pair_batch(targets: list, sources: list) -> list[tuple]:
+    if len(targets) != len(sources):
+        raise ValueError(f"Batch needs the same count on both sides ({len(targets)} HQ vs {len(sources)} dubbed)")
+    if len(targets) == 1 and len(sources) == 1:
+        single = (episode_tag(str(targets[0])), episode_tag(str(sources[0])))
+        if single[0] is not None and single[1] is not None and single[0] != single[1]:
+            raise ValueError(f"Episode mismatch: HQ is {single[0]} but dubbed is {single[1]}")
+        return [(targets[0], sources[0])]
+    by_tag: dict[str, object] = {}
+    dubbed_by_tag: dict[str, object] = {}
+    missing_hq: list[str] = []
+    missing_dub: list[str] = []
+    for name in targets:
+        tag = episode_tag(str(name))
+        if tag is None:
+            missing_hq.append(str(name))
+        elif tag in by_tag:
+            raise ValueError(f"Duplicate episode {tag} in HQ files")
+        else:
+            by_tag[tag] = name
+    for name in sources:
+        tag = episode_tag(str(name))
+        if tag is None:
+            missing_dub.append(str(name))
+        elif tag in dubbed_by_tag:
+            raise ValueError(f"Duplicate episode {tag} in dubbed files")
+        else:
+            dubbed_by_tag[tag] = name
+    if missing_hq or missing_dub:
+        details = []
+        if missing_hq:
+            details.append("HQ without SXXEXX: " + ", ".join(sorted(missing_hq)))
+        if missing_dub:
+            details.append("dubbed without SXXEXX: " + ", ".join(sorted(missing_dub)))
+        raise ValueError("Batch pairing needs SXXEXX in every filename. " + " / ".join(details))
+    only_hq = sorted(set(by_tag) - set(dubbed_by_tag))
+    only_dub = sorted(set(dubbed_by_tag) - set(by_tag))
+    if only_hq or only_dub:
+        details = []
+        if only_hq:
+            details.append("only in HQ: " + ", ".join(only_hq))
+        if only_dub:
+            details.append("only in dubbed: " + ", ".join(only_dub))
+        raise ValueError("Episode sets differ, refusing to guess pairs. " + " / ".join(details))
+    return [(by_tag[tag], dubbed_by_tag[tag]) for tag in sorted(by_tag)]
 
 
 def _target_layout(info: dict) -> tuple[int, float | None]:
@@ -88,6 +153,7 @@ def _verify_dubbed(output: Path, length: float | None) -> None:
 
 
 def mux(target: Path, source: Path, output: Path, offset: float) -> None:
+    output.parent.mkdir(parents=True, exist_ok=True)
     target_info = probe(target)
     audio_count, length = _target_layout(target_info)
     dubbed = audio_count  # output audio index of 1:a:0
@@ -132,6 +198,10 @@ def main() -> int:
         source_info = probe(args.source)
         first_audio_stream(target_info)
         first_audio_stream(source_info)
+        target_tag, source_tag = episode_tag(args.target.name), episode_tag(args.source.name)
+        if target_tag is not None and source_tag is not None and target_tag != source_tag:
+            print(f"Error: Episode mismatch: HQ is {target_tag} but dubbed is {source_tag}")
+            return 1
         print("Analyzing...")
         report = analyze_files(args.target, args.source)
         print(f"Initial offset: {report['offset']:+.3f} s")

@@ -74,10 +74,10 @@ python3 -m audiosync.web
 
 The UI lets you:
 
-- select the target video and source audio/video;
+- select the target video and source audio/video (multiple files each for batch, paired by SXXEXX in the filename);
 - analyze the alignment;
 - inspect offset, tempo correction, confidence, matches, and segments;
-- create and download the final MKV.
+- create the final MKV, saved straight to `muxes/` (`S02E03` in the HQ name becomes `muxes/S02E03.mkv`, no download prompt).
 
 Files are processed locally by the server. Nothing is uploaded to an external service.
 
@@ -102,7 +102,6 @@ python3 -m compileall -q audiosync
 - The MVP primarily estimates a fixed offset.
 - Progressive drift is not corrected reliably yet.
 - Cuts, missing intros, recaps, logos, and multiple offset changes are not segmented yet.
-- Batch episode processing is not implemented.
 - The analysis does not yet use L-R separation or special center-channel handling.
 - The output audio is re-encoded to AAC when muxing is required.
 - The Web UI is intentionally local and simple, without authentication. Do not expose it publicly.
