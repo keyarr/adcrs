@@ -10,7 +10,7 @@ from pathlib import Path
 
 from .cli import episode_tag, mux, output_path
 from .ffmpeg import require_tools
-from .sync import analyze_files
+from .sync import MIN_CONFIDENCE, analyze_files
 
 ROOT = Path(__file__).parent / "web"
 # /tmp is often tmpfs, so multi-GB uploads would eat RAM and swap.
@@ -194,6 +194,9 @@ class Handler(BaseHTTPRequestHandler):
                 self._send(200, json.dumps(report))
                 return
             if path == "/api/mux":
+                if report["confidence"] < MIN_CONFIDENCE:
+                    self._send(400, json.dumps({"error": f"Low confidence ({report['confidence']:.0%}) with {report.get('cuts', 0)} cut(s), refusing to mux. Result: MANUAL REVIEW"}))
+                    return
                 # Name the output after the HQ upload: S02E03 in the name
                 # becomes muxes/S02E03.mkv, otherwise muxes/<hq>.dubbed.mkv.
                 output = output_path(Path(target_name), None)

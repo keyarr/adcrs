@@ -31,7 +31,7 @@ def _features(audio: np.ndarray, sample_rate: int, frame_ms: int = 80) -> np.nda
     return result.astype(np.float32)
 
 
-def _match(template: np.ndarray, source: np.ndarray) -> tuple[int, float]:
+def _match(template: np.ndarray, source: np.ndarray, exclude_frames: int = 25) -> tuple[int, float, float]:
     length, channels = template.shape
     if len(source) < length:
         raise SyncError("Source audio is shorter than the target analysis window")
@@ -43,10 +43,34 @@ def _match(template: np.ndarray, source: np.ndarray) -> tuple[int, float]:
         score += correlation / denom
     score /= channels
     index = int(np.argmax(score))
-    return index, float(score[index])
+    best = float(score[index])
+    lo = max(0, index - exclude_frames)
+    hi = min(len(score), index + exclude_frames + 1)
+    masked = score.copy()
+    masked[lo:hi] = -np.inf
+    second = float(np.max(masked))
+    return index, best, best - second
 
 
-def analyze(target: np.ndarray, source: np.ndarray, sample_rate: int, window_seconds: float = 30.0, step_seconds: float = 180.0) -> dict:
+CONF_MIN = 0.25
+MARGIN_MIN = 0.015
+CLUSTER_TOL = 0.5
+MIN_CONFIDENCE = 0.35
+
+
+def _fit_level(points: list[tuple[float, float]]) -> tuple[float, float]:
+    deltas = [s - t for t, s in points]
+    if len(points) < 2:
+        return 1.0, float(deltas[0])
+    target = np.array([t for t, _ in points])
+    source = np.array([s for _, s in points])
+    slope, intercept = np.polyfit(target, source, 1)
+    if abs(float(slope) - 1.0) > 0.1:
+        return 1.0, float(np.median(deltas))
+    return float(slope), float(intercept)
+
+
+def analyze(target: np.ndarray, source: np.ndarray, sample_rate: int, window_seconds: float = 30.0, step_seconds: float = 60.0) -> dict:
     if sample_rate <= 0:
         raise SyncError("Sample rate must be positive")
     if not np.isfinite(window_seconds) or not np.isfinite(step_seconds) or window_seconds <= 0 or step_seconds <= 0:
@@ -62,28 +86,51 @@ def analyze(target: np.ndarray, source: np.ndarray, sample_rate: int, window_sec
     if len(target_features) < window:
         window = len(target_features)
     matches = []
+    exclude = max(1, round(1.0 / feature_hop_seconds))
     for start in range(0, len(target_features) - window + 1, step):
-        source_start, confidence = _match(target_features[start:start + window], source_features)
-        matches.append({"target_time": start * frame_step, "source_time": source_start * frame_step, "confidence": confidence})
-    valid = [m for m in matches if m["confidence"] >= 0.25]
-    if not valid:
+        source_start, confidence, margin = _match(target_features[start:start + window], source_features, exclude)
+        matches.append({"target_time": start * frame_step, "source_time": source_start * frame_step, "confidence": confidence, "margin": margin})
+    reliable = [m for m in matches if m["confidence"] >= CONF_MIN and m["margin"] >= MARGIN_MIN]
+    if len(reliable) < 2:
         raise SyncError("No reliable audio correspondence found")
-    target_times = np.array([m["target_time"] for m in valid])
-    source_times = np.array([m["source_time"] for m in valid])
-    deltas = source_times - target_times
-    med_offset = float(np.median(deltas))
-    inliers = np.abs(deltas - med_offset) <= max(0.5, float(np.median(np.abs(deltas - med_offset)) * 3 + 0.1))
-    if np.count_nonzero(inliers) >= 2:
-        coefficients = np.polyfit(target_times[inliers], source_times[inliers], 1)
-        ratio, offset = float(coefficients[0]), float(coefficients[1])
-        if abs(ratio - 1.0) > 0.1:
-            ratio, offset = 1.0, med_offset
+    order = sorted(range(len(reliable)), key=lambda i: reliable[i]["source_time"] - reliable[i]["target_time"])
+    groups: list[list[int]] = []
+    for idx in order:
+        delta = reliable[idx]["source_time"] - reliable[idx]["target_time"]
+        if groups:
+            prev = reliable[groups[-1][-1]]["source_time"] - reliable[groups[-1][-1]]["target_time"]
+            if abs(delta - prev) <= CLUSTER_TOL:
+                groups[-1].append(idx)
+                continue
+        groups.append([idx])
+    stables = [g for g in groups if len(g) >= 2]
+    if not stables:
+        raise SyncError("No reliable audio correspondence found")
+    main = max(stables, key=lambda g: (len(g), -min(reliable[i]["target_time"] for i in g)))
+    main_points = [(reliable[i]["target_time"], reliable[i]["source_time"]) for i in main]
+    ratio, offset = _fit_level(main_points)
+    mean_conf = float(np.mean([reliable[i]["confidence"] for i in main]))
+    confidence = float(np.clip(mean_conf * len(main) / len(reliable), 0, 1))
+    cuts = len(stables) - 1
+    if cuts > 0:
+        confidence = min(confidence * 0.5, 0.34)
+    duration = len(target) / sample_rate
+    if cuts == 0:
+        segments = [{"target_start": 0.0, "target_end": duration, "source_start": offset, "tempo": ratio}]
     else:
-        ratio, offset = 1.0, med_offset
-    residuals = source_times - (offset + ratio * target_times)
-    robust = np.abs(residuals) <= max(0.35, float(np.median(np.abs(residuals)) * 3 + 0.05))
-    confidence = float(np.clip(np.mean([m["confidence"] for m in valid]) * np.mean(robust), 0, 1))
-    return {"offset": offset, "tempo_ratio": ratio, "confidence": confidence, "matches": matches, "segments": [{"target_start": 0.0, "target_end": len(target) / sample_rate, "source_start": offset, "tempo": ratio}]}
+        stables.sort(key=lambda g: min(reliable[i]["target_time"] for i in g))
+        bounds = [0.0]
+        for first, second in zip(stables[:-1], stables[1:]):
+            prev_end = max(reliable[i]["target_time"] for i in first)
+            next_start = min(reliable[i]["target_time"] for i in second)
+            bounds.append((prev_end + next_start) / 2)
+        bounds.append(duration)
+        segments = []
+        for group, start, end in zip(stables, bounds[:-1], bounds[1:]):
+            points = [(reliable[i]["target_time"], reliable[i]["source_time"]) for i in group]
+            tempo, start_offset = _fit_level(points)
+            segments.append({"target_start": start, "target_end": end, "source_start": start_offset, "tempo": tempo})
+    return {"offset": offset, "tempo_ratio": ratio, "confidence": confidence, "cuts": cuts, "matches": matches, "segments": segments}
 
 
 def analyze_files(target_path: str | Path, source_path: str | Path) -> dict:
@@ -98,6 +145,7 @@ def write_report(report: dict, path: str | Path, csv_path: str | Path | None = N
     Path(path).write_text(json.dumps(report, indent=2) + "\n")
     if csv_path:
         with Path(csv_path).open("w", newline="") as handle:
-            writer = csv.DictWriter(handle, fieldnames=("target_time", "source_time", "confidence"))
+            writer = csv.DictWriter(handle, fieldnames=("target_time", "source_time", "confidence", "margin"))
             writer.writeheader()
-            writer.writerows(report["matches"])
+            for row in report["matches"]:
+                writer.writerow({key: row.get(key, "") for key in ("target_time", "source_time", "confidence", "margin")})

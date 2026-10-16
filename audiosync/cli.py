@@ -4,7 +4,7 @@ import subprocess
 from pathlib import Path
 
 from .ffmpeg import first_audio_stream, probe, require_tools
-from .sync import SyncError, analyze_files, write_report
+from .sync import MIN_CONFIDENCE, SyncError, analyze_files, write_report
 
 EPISODE_RE = re.compile(r"s(\d{1,3})e(\d{1,3})", re.IGNORECASE)
 
@@ -206,11 +206,11 @@ def main() -> int:
         report = analyze_files(args.target, args.source)
         print(f"Initial offset: {report['offset']:+.3f} s")
         print(f"Tempo correction: {(report['tempo_ratio'] - 1) * 100:+.4f}%")
-        print("Cuts detected: 0")
+        print(f"Cuts detected: {report.get('cuts', len(report['segments']) - 1)}")
         print(f"Confidence: {report['confidence']:.0%}")
         if args.report or args.csv:
             write_report(report, args.report or "audiosync-report.json", args.csv)
-        if report["confidence"] < 0.55:
+        if report["confidence"] < MIN_CONFIDENCE:
             print("Result: MANUAL REVIEW")
             return 2
         if args.dry_run:
