@@ -59,13 +59,41 @@ class SyncTests(unittest.TestCase):
         from pathlib import Path
         from audiosync.cli import mux
 
-        with patch("subprocess.run") as mock_run:
-            mux(Path("target.mkv"), Path("source.mkv"), Path("out.mkv"), 6.1)
-            args = mock_run.call_args[0][0]
-            self.assertIn("0:a?", args)
-            self.assertIn("1:a:0", args)
-            self.assertNotIn("-shortest", args)
-            self.assertEqual(args[args.index("-c") + 1], "copy")
+        fake_info = {
+            "streams": [
+                {"codec_type": "video", "start_time": "6.084000"},
+                {"codec_type": "audio"},
+            ],
+            "format": {"duration": "1448.108000"},
+        }
+        with patch("audiosync.cli.probe", return_value=fake_info):
+            with patch("audiosync.cli._verify_dubbed"):
+                with patch("subprocess.run") as mock_run:
+                    mux(Path("target.mkv"), Path("source.mkv"), Path("out.mkv"), 6.084)
+                    args = mock_run.call_args[0][0]
+                    self.assertIn("0:a?", args)
+                    self.assertIn("1:a:0", args)
+                    self.assertNotIn("-itsoffset", args)
+                    self.assertNotIn("+genpts", args)
+                    self.assertNotIn("make_zero", args)
+                    # sparse PGS/data must come from a separate demuxer of the
+                    # same target, or a 1000s subtitle gap stalls A/V
+                    # interleaving and dumps the dubbed AAC in one cluster.
+                    inputs = [args[i + 1] for i, a in enumerate(args[:-1]) if a == "-i"]
+                    self.assertEqual(inputs, ["target.mkv", "source.mkv", "target.mkv"])
+                    self.assertIn("2:s?", args)
+                    self.assertIn("2:d?", args)
+                    self.assertNotIn("0:s?", args)
+                    self.assertNotIn("0:d?", args)
+                    # dubbed track (second audio) is re-encoded, the rest is copied
+                    dubbed = "1"
+                    self.assertIn(f"-c:a:{dubbed}", args)
+                    self.assertEqual(args[args.index(f"-c:a:{dubbed}") + 1], "aac")
+                    filt = args[args.index(f"-filter:a:{dubbed}") + 1]
+                    self.assertIn("atrim=start=6.084", filt)
+                    self.assertIn("async=1", filt)
+                    self.assertIn("whole_dur=", filt)
+                    self.assertIn("language=por", args)
 
 
 if __name__ == "__main__":

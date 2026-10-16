@@ -3,6 +3,7 @@ import os
 import re
 import shutil
 import subprocess
+import sys
 import tempfile
 import urllib.parse
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
@@ -159,29 +160,39 @@ def parse_upload(request):
 class Handler(BaseHTTPRequestHandler):
     def _send(self, status, body, content_type="application/json"):
         payload = body if isinstance(body, bytes) else body.encode()
-        self.send_response(status)
-        self.send_header("Content-Type", content_type)
-        self.send_header("Content-Length", str(len(payload)))
-        self.end_headers()
-        self.wfile.write(payload)
+        try:
+            self.send_response(status)
+            self.send_header("Content-Type", content_type)
+            self.send_header("Content-Length", str(len(payload)))
+            self.end_headers()
+            self.wfile.write(payload)
+        except (BrokenPipeError, ConnectionResetError):
+            pass
 
     def do_GET(self):
         path = urllib.parse.urlparse(self.path).path
         if path == "/" or path == "/index.html":
             self._send(200, (ROOT / "index.html").read_bytes(), "text/html; charset=utf-8")
             return
+        if path == "/favicon.ico":
+            self._send(204, b"")
+            return
         if path.startswith("/api/download/"):
             name = path.removeprefix("/api/download/")
             output = OUTPUTS.pop(name, None)
             if output and output.exists():
-                size = output.stat().st_size
-                self.send_response(200)
-                self.send_header("Content-Type", "video/x-matroska")
-                self.send_header("Content-Length", str(size))
-                self.end_headers()
-                with output.open("rb") as handle:
-                    shutil.copyfileobj(handle, self.wfile, length=1024 * 1024)
-                output.unlink(missing_ok=True)
+                try:
+                    size = output.stat().st_size
+                    self.send_response(200)
+                    self.send_header("Content-Type", "video/x-matroska")
+                    self.send_header("Content-Length", str(size))
+                    self.end_headers()
+                    with output.open("rb") as handle:
+                        shutil.copyfileobj(handle, self.wfile, length=1024 * 1024)
+                except (BrokenPipeError, ConnectionResetError):
+                    pass
+                finally:
+                    output.unlink(missing_ok=True)
                 return
         self._send(404, json.dumps({"error": "Not found"}))
 
@@ -221,8 +232,18 @@ class Handler(BaseHTTPRequestHandler):
         return
 
 
+class Server(ThreadingHTTPServer):
+    # Client aborts (tab closed, fetch cancelled, favicon prefetch) surface as
+    # BrokenPipe/ConnectionReset inside handler threads. Not worth a traceback.
+    def handle_error(self, request, client_address):
+        exc = sys.exc_info()[1]
+        if isinstance(exc, (BrokenPipeError, ConnectionResetError)):
+            return
+        super().handle_error(request, client_address)
+
+
 def main():
-    server = ThreadingHTTPServer(("127.0.0.1", 8765), Handler)
+    server = Server(("127.0.0.1", 8765), Handler)
     print("AudioSync Web UI: http://127.0.0.1:8765", flush=True)
     try:
         server.serve_forever()
